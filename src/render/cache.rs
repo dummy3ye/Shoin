@@ -449,6 +449,10 @@ fn spacer_rows(spacing: usize, doc: &BufferState, line: usize, n: usize) -> usiz
         // A fence is a slab and a table is a grid. Both are shapes the reader
         // measures by eye, and a row of air inside one breaks the shape.
         Some(BlockKind::FenceOpen(_) | BlockKind::FenceBody { .. } | BlockKind::FrontMatter) => 0,
+        Some(BlockKind::MathBlock) => match doc.blocks.kinds.get(line + 1) {
+            Some(BlockKind::MathBlock) => 0,
+            _ => spacing,
+        },
         Some(BlockKind::Table) => match doc.blocks.kinds.get(line + 1) {
             Some(BlockKind::Table) => 0,
             _ => spacing,
@@ -534,6 +538,8 @@ fn build(app: &App, doc: &BufferState, line: usize, block: BlockKind, measure: u
                 app.embed_mode,
             )
         })
+    } else if block == BlockKind::MathBlock && app.image_protocol != crate::image::Protocol::None {
+        math_embed(app, doc, line, measure)
     } else {
         None
     };
@@ -542,7 +548,7 @@ fn build(app: &App, doc: &BufferState, line: usize, block: BlockKind, measure: u
     // wrap would break that layout onto several ragged rows instead of leaving
     // it aligned. Overflow past the measure is clipped at the pane edge, same
     // as any other unwrapped line.
-    let (wrap_raw, wrap_concealed) = if block == BlockKind::Table {
+    let (wrap_raw, wrap_concealed) = if block == BlockKind::Table || block == BlockKind::MathBlock {
         (no_wrap(&source), no_wrap(&concealed))
     } else {
         (
@@ -562,6 +568,57 @@ fn build(app: &App, doc: &BufferState, line: usize, block: BlockKind, measure: u
         hang_concealed,
         embed,
     }
+}
+
+fn math_embed(
+    app: &App,
+    doc: &BufferState,
+    line: usize,
+    measure: u16,
+) -> Option<crate::transclude::preview::Expansion> {
+    if app.image_protocol == crate::image::Protocol::None {
+        return None;
+    }
+
+    if line > 0 && doc.blocks.kinds.get(line - 1) == Some(&BlockKind::MathBlock) {
+        return Some(crate::transclude::preview::Expansion { rows: Vec::new() });
+    }
+
+    let n = doc.buffer.line_count();
+    let mut math_lines = Vec::new();
+    let mut idx = line;
+    while idx < n && doc.blocks.kinds.get(idx) == Some(&BlockKind::MathBlock) {
+        math_lines.push(doc.buffer.line_text(idx));
+        idx += 1;
+    }
+
+    let full = math_lines.join("\n");
+    let clean = full
+        .trim()
+        .trim_start_matches('$')
+        .trim_end_matches('$')
+        .trim();
+
+    if clean.is_empty() {
+        return None;
+    }
+
+    let png_bytes = crate::math::render_png(clean, 2.0, None).ok()?;
+    let info = crate::image::probe(&png_bytes)?;
+
+    let cols = ((info.width as f32 / 14.0).ceil() as u16).clamp(1, measure.max(4));
+    let rows = ((info.height as f32 / 30.0).ceil() as u16).clamp(1, 16);
+
+    let mut rows_vec = vec![crate::transclude::preview::Row::Image(
+        crate::transclude::preview::Picture {
+            cols,
+            rows,
+            payload: png_bytes,
+        },
+    )];
+    rows_vec.extend((1..rows).map(|_| crate::transclude::preview::Row::Reserved));
+
+    Some(crate::transclude::preview::Expansion { rows: rows_vec })
 }
 
 #[cfg(test)]

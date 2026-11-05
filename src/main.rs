@@ -25,6 +25,7 @@ mod fs;
 mod help;
 mod image;
 mod input;
+mod math;
 mod render;
 mod text;
 mod transclude;

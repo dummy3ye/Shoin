@@ -38,6 +38,16 @@ notify = "8.2"
 # Text handling
 unicode-width = "0.2"
 
+# Self-contained math/typesetting backend. Fonts are embedded so preview and
+# export do not depend on a user's system TeX installation.
+typst-as-lib = { version = "0.17", default-features = false, features = ["typst-kit-fonts", "typst-kit-embed-fonts"] }
+typst = "0.15"
+typst-layout = "0.15"
+typst-render = "0.15"
+typst-svg = "0.15"
+typst-utils = "0.15"
+mitex = "0.2"
+
 # CLI + errors
 clap = { version = "4.6", features = ["derive"] }
 anyhow = "1.0"

@@ -26,8 +26,9 @@ pub enum Inline {
     Image,
     Tag,
     Autolink,
-    /// `\*` — the backslash is dimmed, the next char is literal.
     Escape,
+    /// Inline LaTeX delimited by `$…$`
+    Latex,
 }
 
 pub struct InlineSpan {
@@ -107,6 +108,9 @@ pub fn target_of(span: &InlineSpan, line: &str) -> Option<String> {
 /// Try every construct that can begin at `i`, in priority order.
 fn match_at(chars: &[char], i: usize, cfg: &MarkdownConfig) -> Option<InlineSpan> {
     match chars[i] {
+        '\\' if cfg.inline_latex && chars.get(i + 1) == Some(&'(') => {
+            latex_delimited_at(chars, i, 2, '\\', ')')
+        }
         '\\' => escape_at(chars, i),
         '`' => code_at(chars, i),
         '!' if chars.get(i + 1) == Some(&'[') => bracket_link(chars, i, true),
@@ -117,6 +121,13 @@ fn match_at(chars: &[char], i: usize, cfg: &MarkdownConfig) -> Option<InlineSpan
         '=' if cfg.highlight => pair_at(chars, i, '=', Inline::Highlight),
         '#' if cfg.tags => tag_at(chars, i),
         'h' => autolink_at(chars, i),
+        '$' if cfg.inline_latex => {
+            if chars.get(i + 1) == Some(&'$') {
+                latex_delimited_at(chars, i, 2, '$', '$')
+            } else {
+                latex_at(chars, i)
+            }
+        }
         _ => None,
     }
 }
@@ -179,6 +190,48 @@ fn code_at(chars: &[char], i: usize) -> Option<InlineSpan> {
         outer: i..close + r,
         inner: open_end..close,
     })
+}
+
+fn latex_at(chars: &[char], i: usize) -> Option<InlineSpan> {
+    if chars.get(i + 1) == Some(&'$') {
+        return None;
+    }
+    let close = find_delim(chars, i + 1, '$', 1)?;
+    if close <= i + 1 || chars.get(close + 1) == Some(&'$') {
+        return None;
+    }
+    Some(InlineSpan {
+        kind: Inline::Latex,
+        outer: i..close + 1,
+        inner: i + 1..close,
+    })
+}
+
+fn latex_delimited_at(
+    chars: &[char],
+    i: usize,
+    open_len: usize,
+    close_prefix: char,
+    close: char,
+) -> Option<InlineSpan> {
+    let mut j = i + open_len;
+    while j < chars.len() {
+        let closes = if close_prefix == close {
+            chars.get(j) == Some(&close) && chars.get(j + 1) == Some(&close)
+        } else {
+            chars.get(j) == Some(&close_prefix) && chars.get(j + 1) == Some(&close)
+        };
+        if closes {
+            let close_len = if close_prefix == close { 2 } else { 2 };
+            return (j > i + open_len).then_some(InlineSpan {
+                kind: Inline::Latex,
+                outer: i..j + close_len,
+                inner: i + open_len..j,
+            });
+        }
+        j += 1;
+    }
+    None
 }
 
 /// `*` / `**` / `***`. The run length picks italic / bold / both.
@@ -420,6 +473,10 @@ fn body_style(kind: Inline, base: Style, theme: &Theme) -> Style {
             s.fg = theme.tag;
             s.bg = theme.tag_bg;
         }
+        Inline::Latex => {
+            s.fg = theme.code;
+            s.bg = theme.code_bg;
+        }
         // The backslash is the marker; the escaped char shows in the base style.
         Inline::Escape => {}
     }
@@ -566,6 +623,22 @@ mod tests {
         cfg.tags = false;
         cfg.highlight = false;
         assert!(scan("[[note]] #tag ==hi==", &cfg).is_empty());
+    }
+
+    #[test]
+    fn inline_latex_is_detected_when_enabled() {
+        let cfg = md();
+        let span = only("area $x^2$");
+        assert_eq!(span.kind, Inline::Latex);
+        assert_eq!(text("area $x^2$", &span.inner), "x^2");
+        assert!(scan("$unclosed", &cfg).is_empty());
+        let display = only(r"$$\nabla \cdot \vec{E}$$");
+        assert_eq!(display.kind, Inline::Latex);
+        assert_eq!(
+            text(r"$$\nabla \cdot \vec{E}$$", &display.inner),
+            r"\nabla \cdot \vec{E}"
+        );
+        assert_eq!(only(r"area \(x^2\)").kind, Inline::Latex);
     }
 
     #[test]

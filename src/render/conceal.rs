@@ -139,6 +139,17 @@ impl ConcealMap {
             if sp.outer.end > sp.inner.end {
                 ops.push(Conceal::Hide(sp.inner.end..sp.outer.end));
             }
+            if sp.kind == crate::render::markdown::inline::Inline::Latex {
+                let inner: String = chars[sp.inner.clone()].iter().collect();
+                let text = render_latex(&inner);
+                if text != inner {
+                    ops.push(Conceal::Replace {
+                        range: sp.inner.clone(),
+                        text,
+                        style: None,
+                    });
+                }
+            }
         }
 
         // Sort and drop any overlap (block vs inline never overlap in practice,
@@ -330,6 +341,429 @@ impl ConcealMap {
 
 }
 
+fn render_latex(input: &str) -> String {
+    let mut out = String::new();
+    let chars: Vec<char> = input.trim().chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let ch = chars[i];
+        i += 1;
+        if ch == '\\' {
+            if i < chars.len() {
+                match chars[i] {
+                    '\\' => {
+                        let is_trailing = chars[i + 1..].iter().all(|c| c.is_whitespace());
+                        if !is_trailing {
+                            out.push_str(" │ ");
+                        }
+                        i += 1;
+                        continue;
+                    }
+                    ',' | ' ' => {
+                        out.push(' ');
+                        i += 1;
+                        continue;
+                    }
+                    ';' => {
+                        out.push_str("  ");
+                        i += 1;
+                        continue;
+                    }
+                    '!' => {
+                        i += 1;
+                        continue;
+                    }
+                    '{' => {
+                        out.push('{');
+                        i += 1;
+                        continue;
+                    }
+                    '}' => {
+                        out.push('}');
+                        i += 1;
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+            let mut name = String::new();
+            while i < chars.len() && (chars[i].is_ascii_alphabetic() || chars[i] == '*') {
+                name.push(chars[i]);
+                i += 1;
+            }
+            if matches!(name.as_str(), "frac" | "dfrac") {
+                if let Some((numerator, next)) = braced(&chars, i) {
+                    if let Some((denominator, end)) = braced(&chars, next) {
+                        out.push_str(&format!("{numerator}⁄{denominator}"));
+                        i = end;
+                        continue;
+                    }
+                }
+            }
+            if name == "sqrt" {
+                if let Some((value, end)) = braced(&chars, i) {
+                    out.push('√');
+                    out.push_str(&value);
+                    i = end;
+                    continue;
+                }
+            }
+            if matches!(name.as_str(), "vec" | "mathbf" | "bm" | "boldsymbol") {
+                if let Some((value, end)) = braced(&chars, i) {
+                    if name == "vec" {
+                        out.push_str(&to_vec(&value));
+                    } else {
+                        out.push_str(&value);
+                    }
+                    i = end;
+                    continue;
+                } else if i < chars.len() && chars[i].is_ascii_alphabetic() {
+                    let c = chars[i];
+                    i += 1;
+                    if name == "vec" {
+                        out.push_str(&to_vec(&c.to_string()));
+                    } else {
+                        out.push(c);
+                    }
+                    continue;
+                }
+            }
+            if name == "hat" {
+                if let Some((value, end)) = braced(&chars, i) {
+                    out.push_str(&to_hat(&value));
+                    i = end;
+                    continue;
+                } else if i < chars.len() && chars[i].is_ascii_alphabetic() {
+                    let c = chars[i];
+                    i += 1;
+                    out.push_str(&to_hat(&c.to_string()));
+                    continue;
+                }
+            }
+            if matches!(name.as_str(), "text" | "mathrm" | "operatorname") {
+                if let Some((value, end)) = braced_raw(&chars, i) {
+                    out.push_str(&value);
+                    i = end;
+                    continue;
+                }
+            }
+            if name == "begin" {
+                if let Some((env, end)) = braced_raw(&chars, i) {
+                    let env = env.trim();
+                    let end_tag = format!("\\end{{{env}}}");
+                    let remaining: String = chars[end..].iter().collect();
+                    if let Some(pos) = remaining.find(&end_tag) {
+                        let inner_content = &remaining[..pos];
+                        let rendered_matrix = render_environment(env, inner_content);
+                        out.push_str(&rendered_matrix);
+                        i = end + pos + end_tag.chars().count();
+                        continue;
+                    } else {
+                        let open_delim = match env {
+                            "vmatrix" => "|",
+                            "Vmatrix" => "‖",
+                            "pmatrix" => "(",
+                            "bmatrix" => "[",
+                            "Bmatrix" => "{",
+                            _ => "",
+                        };
+                        out.push_str(open_delim);
+                        i = end;
+                        continue;
+                    }
+                }
+            }
+            if name == "end" {
+                if let Some((env, end)) = braced_raw(&chars, i) {
+                    let env = env.trim();
+                    let close_delim = match env {
+                        "vmatrix" => "|",
+                        "Vmatrix" => "‖",
+                        "pmatrix" => ")",
+                        "bmatrix" => "]",
+                        "Bmatrix" => "}",
+                        _ => "",
+                    };
+                    out.push_str(close_delim);
+                    i = end;
+                    continue;
+                }
+            }
+            let replacement = match name.as_str() {
+                // Typo tolerance
+                "navla" | "nabla" => "∇",
+                "partial" => "∂",
+                "oint" => "∮",
+                "oiint" => "∯",
+                "iint" => "∬",
+                "iiint" => "∭",
+                "int" => "∫",
+                "sum" => "Σ",
+                "prod" => "Π",
+                "coprod" => "∐",
+                "rightarrow" | "to" => "→",
+                "leftarrow" | "gets" => "←",
+                "leftrightarrow" => "↔",
+                "Rightarrow" | "implies" => "⇒",
+                "Leftarrow" => "⇐",
+                "Leftrightarrow" | "iff" => "⇔",
+                "downarrow" => "↓",
+                "uparrow" => "↑",
+                "times" => "×",
+                "cdot" => "·",
+                "div" => "÷",
+                "pm" => "±",
+                "mp" => "∓",
+                "neq" | "ne" => "≠",
+                "leq" | "le" => "≤",
+                "geq" | "ge" => "≥",
+                "approx" => "≈",
+                "equiv" => "≡",
+                "sim" => "∼",
+                "propto" => "∝",
+                "infty" => "∞",
+                "hbar" => "ℏ",
+                "forall" => "∀",
+                "exists" => "∃",
+                "nexists" => "∄",
+                "in" => "∈",
+                "notin" => "∉",
+                "subset" => "⊂",
+                "supset" => "⊃",
+                "subseteq" => "⊆",
+                "supseteq" => "⊇",
+                "cap" => "∩",
+                "cup" => "∪",
+                "land" | "wedge" => "∧",
+                "lor" | "vee" => "∨",
+                "neg" | "lnot" => "¬",
+                "circ" => "∘",
+                "bullet" => "•",
+                "star" => "⋆",
+                "perp" => "⊥",
+                "parallel" => "∥",
+                "dots" | "ldots" => "…",
+                "cdots" => "⋯",
+                "vdots" => "⋮",
+                "ddots" => "⋱",
+                "quad" => "  ",
+                "qquad" => "    ",
+                // Greek lowercase
+                "alpha" => "α",
+                "beta" => "β",
+                "gamma" => "γ",
+                "delta" => "δ",
+                "epsilon" => "ϵ",
+                "varepsilon" => "ε",
+                "zeta" => "ζ",
+                "eta" => "η",
+                "theta" => "θ",
+                "vartheta" => "ϑ",
+                "iota" => "ι",
+                "kappa" => "κ",
+                "lambda" => "λ",
+                "mu" => "μ",
+                "nu" => "ν",
+                "xi" => "ξ",
+                "pi" => "π",
+                "varpi" => "ϖ",
+                "rho" => "ρ",
+                "varrho" => "ϱ",
+                "sigma" => "σ",
+                "varsigma" => "ς",
+                "tau" => "τ",
+                "upsilon" => "υ",
+                "phi" => "φ",
+                "varphi" => "ϕ",
+                "chi" => "χ",
+                "psi" => "ψ",
+                "omega" => "ω",
+                // Greek uppercase
+                "Gamma" => "Γ",
+                "Delta" => "Δ",
+                "Theta" => "Θ",
+                "Lambda" => "Λ",
+                "Xi" => "Ξ",
+                "Pi" => "Π",
+                "Sigma" => "Σ",
+                "Upsilon" => "Υ",
+                "Phi" => "Φ",
+                "Psi" => "Ψ",
+                "Omega" => "Ω",
+                _ => "",
+            };
+            if replacement.is_empty() {
+                out.push('\\');
+                out.push_str(&name);
+            } else {
+                out.push_str(replacement);
+            }
+        } else if ch == '&' {
+            out.push_str("  ");
+        } else if ch == '^' || ch == '_' {
+            let superscript = ch == '^';
+            let mut value = String::new();
+            if let Some((group, end)) = braced(&chars, i) {
+                value = group;
+                i = end;
+            } else if i < chars.len() {
+                value.push(chars[i]);
+                i += 1;
+            }
+            for value_ch in value.chars() {
+                out.push(if superscript {
+                    superscript_char(value_ch)
+                } else {
+                    subscript_char(value_ch)
+                });
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn to_vec(value: &str) -> String {
+    let mut out = String::new();
+    for (idx, c) in value.chars().enumerate() {
+        out.push(c);
+        if idx == 0 {
+            out.push('\u{20D7}');
+        }
+    }
+    if out.is_empty() {
+        value.to_string()
+    } else {
+        out
+    }
+}
+
+fn to_hat(value: &str) -> String {
+    match value {
+        "i" => "î".to_string(),
+        "j" => "ĵ".to_string(),
+        "k" => "k̂".to_string(),
+        _ => {
+            let mut out = String::new();
+            for (idx, c) in value.chars().enumerate() {
+                out.push(c);
+                if idx == 0 {
+                    out.push('\u{0302}');
+                }
+            }
+            out
+        }
+    }
+}
+
+fn render_environment(env: &str, content: &str) -> String {
+    let (open, close) = match env {
+        "vmatrix" => ("|", "|"),
+        "Vmatrix" => ("‖", "‖"),
+        "pmatrix" => ("(", ")"),
+        "bmatrix" => ("[", "]"),
+        "Bmatrix" => ("{", "}"),
+        _ => ("", ""),
+    };
+    let rows: Vec<&str> = content.split(r"\\").collect();
+    let rendered_rows: Vec<String> = rows
+        .into_iter()
+        .filter_map(|row| {
+            let trimmed = row.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            let cols: Vec<String> = trimmed
+                .split('&')
+                .map(|col| render_latex(col.trim()))
+                .collect();
+            Some(cols.join("  "))
+        })
+        .collect();
+
+    if open.is_empty() {
+        rendered_rows.join(" │ ")
+    } else {
+        format!("{open} {} {close}", rendered_rows.join(" │ "))
+    }
+}
+
+fn braced(chars: &[char], start: usize) -> Option<(String, usize)> {
+    if chars.get(start) != Some(&'{') {
+        return None;
+    }
+    let mut depth = 0;
+    let mut out = String::new();
+    for i in start..chars.len() {
+        match chars[i] {
+            '{' => {
+                depth += 1;
+                if depth > 1 {
+                    out.push('{');
+                }
+            }
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((render_latex(&out), i + 1));
+                }
+                out.push('}');
+            }
+            c => out.push(c),
+        }
+    }
+    None
+}
+
+fn braced_raw(chars: &[char], start: usize) -> Option<(String, usize)> {
+    if chars.get(start) != Some(&'{') {
+        return None;
+    }
+    let mut depth = 0;
+    let mut out = String::new();
+    for i in start..chars.len() {
+        match chars[i] {
+            '{' => {
+                depth += 1;
+                if depth > 1 {
+                    out.push('{');
+                }
+            }
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((out, i + 1));
+                }
+                out.push('}');
+            }
+            c => out.push(c),
+        }
+    }
+    None
+}
+
+fn superscript_char(ch: char) -> char {
+    match ch {
+        '0' => '⁰', '1' => '¹', '2' => '²', '3' => '³', '4' => '⁴',
+        '5' => '⁵', '6' => '⁶', '7' => '⁷', '8' => '⁸', '9' => '⁹',
+        '+' => '⁺', '-' => '⁻', '=' => '⁼', '(' => '⁽', ')' => '⁾',
+        'n' => 'ⁿ', 'i' => 'ⁱ', c => c,
+    }
+}
+
+fn subscript_char(ch: char) -> char {
+    match ch {
+        '0' => '₀', '1' => '₁', '2' => '₂', '3' => '₃', '4' => '₄',
+        '5' => '₅', '6' => '₆', '7' => '₇', '8' => '₈', '9' => '₉',
+        '+' => '₊', '-' => '₋', '=' => '₌', '(' => '₍', ')' => '₎',
+        'a' => 'ₐ', 'e' => 'ₑ', 'h' => 'ₕ', 'i' => 'ᵢ', 'j' => 'ⱼ',
+        'k' => 'ₖ', 'l' => 'ₗ', 'm' => 'ₘ', 'n' => 'ₙ', 'o' => 'ₒ',
+        'p' => 'ₚ', 'r' => 'ᵣ', 's' => 'ₛ', 't' => 'ₜ', 'u' => 'ᵤ',
+        'v' => 'ᵥ', 'x' => 'ₓ', 'y' => 'ᵧ', c => c,
+    }
+}
+
 /// The bullet a list item at this indent wears: the two glyphs alternate by
 /// nesting level, the way a printed list alternates • and ◦, so a sublist reads
 /// as a different rank at a glance. `depth` is the item's indent in COLUMNS.
@@ -485,7 +919,95 @@ fn block_ops(chars: &[char], block: &BlockKind, ctx: &ConcealCtx, ops: &mut Vec<
                 style: Some(Style::fg(color)),
             });
         }
+        BlockKind::MathBlock => {
+            math_block_ops(chars, ops);
+        }
         _ => {}
+    }
+}
+
+fn math_block_ops(chars: &[char], ops: &mut Vec<Conceal>) {
+    let len = chars.len();
+    if len == 0 {
+        return;
+    }
+    let line: String = chars.iter().collect();
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if trimmed == "$$" {
+        ops.push(Conceal::Hide(0..len));
+        return;
+    }
+
+    let indent = chars.iter().take_while(|c| **c == ' ' || **c == '\t').count();
+    let starts_with_dd = indent + 1 < len && chars[indent] == '$' && chars[indent + 1] == '$';
+
+    let mut k = len;
+    while k > 0 && (chars[k - 1] == ' ' || chars[k - 1] == '\t') {
+        k -= 1;
+    }
+    let trailing_dd = if k >= 2 && chars[k - 2] == '$' && chars[k - 1] == '$' {
+        Some((k - 2, len))
+    } else {
+        None
+    };
+
+    if starts_with_dd {
+        let mut open_end = indent + 2;
+        while open_end < len && (chars[open_end] == ' ' || chars[open_end] == '\t') {
+            open_end += 1;
+        }
+
+        if let Some((close_start, close_end)) = trailing_dd {
+            if close_start >= open_end {
+                let mut content_end = close_start;
+                while content_end > open_end && (chars[content_end - 1] == ' ' || chars[content_end - 1] == '\t') {
+                    content_end -= 1;
+                }
+                ops.push(Conceal::Hide(indent..open_end));
+                ops.push(Conceal::Hide(close_start..close_end));
+                let inner: String = chars[open_end..content_end].iter().collect();
+                let text = render_latex(&inner);
+                ops.push(Conceal::Replace {
+                    range: open_end..close_start,
+                    text,
+                    style: None,
+                });
+                return;
+            }
+        }
+
+        ops.push(Conceal::Hide(indent..open_end));
+        let inner: String = chars[open_end..len].iter().collect();
+        let text = render_latex(&inner);
+        ops.push(Conceal::Replace {
+            range: open_end..len,
+            text,
+            style: None,
+        });
+    } else if let Some((close_start, close_end)) = trailing_dd {
+        let mut content_end = close_start;
+        while content_end > 0 && (chars[content_end - 1] == ' ' || chars[content_end - 1] == '\t') {
+            content_end -= 1;
+        }
+        ops.push(Conceal::Hide(close_start..close_end));
+        let inner: String = chars[0..content_end].iter().collect();
+        let text = render_latex(&inner);
+        ops.push(Conceal::Replace {
+            range: 0..close_start,
+            text,
+            style: None,
+        });
+    } else {
+        let inner: String = chars.iter().collect();
+        let text = render_latex(&inner);
+        ops.push(Conceal::Replace {
+            range: 0..len,
+            text,
+            style: None,
+        });
     }
 }
 
@@ -560,8 +1082,38 @@ mod tests {
         assert_eq!(shown("call `code` now"), "call code now");
         assert_eq!(shown("a [label](http://x) b"), "a label b");
         assert_eq!(shown("a [[Wiki]] b"), "a Wiki b");
+    }
+
+    #[test]
+    fn inline_latex_renders_common_math() {
+        assert_eq!(shown("flow ($\\rightarrow$ or $\\downarrow$)"), "flow (→ or ↓)");
+        assert_eq!(shown("formula $x^2 + H_2O$"), "formula x² + H₂O");
+        assert_eq!(shown("$\\alpha_1 + \\beta^2$"), "α₁ + β²");
+        assert_eq!(shown("$\\frac{a}{b} + \\sqrt{x}$"), "a⁄b + √x");
+        assert_eq!(
+            shown("$$\\nabla \\cdot \\vec{E} = \\frac{Q}{\\varepsilon_0}$$"),
+            "∇ · E⃗ = Q⁄ε₀"
+        );
+        assert_eq!(
+            shown("$$ \\oint \\vec{E} \\cdot d\\vec{A} = \\frac{Q}{\\varepsilon_0} $$"),
+            "∮ E⃗ · dA⃗ = Q⁄ε₀"
+        );
+        assert_eq!(
+            shown("$$ \\nabla \\times \\vec{F} = \\begin{vmatrix} \\hat{i} & \\hat{j} & \\hat{k} \\\\ \\partial_x & \\partial_y & \\partial_z \\\\ F_x & F_y & F_z \\end{vmatrix} $$"),
+            "∇ × F⃗ = | î  ĵ  k̂ │ ∂ₓ  ∂ᵧ  ∂z │ Fₓ  Fᵧ  Fz |"
+        );
         assert_eq!(shown("tag #foo bar"), "tag foo bar");
         assert_eq!(shown(r"an escaped \* star"), "an escaped * star");
+    }
+
+    #[test]
+    fn multiline_math_block_renders() {
+        assert_eq!(shown_in("$$", &Carry::None), "");
+        assert_eq!(
+            shown_in("\\nabla \\cdot \\vec{B} = 0", &Carry::InMath),
+            "∇ · B⃗ = 0"
+        );
+        assert_eq!(shown_in("$$", &Carry::InMath), "");
     }
 
     #[test]

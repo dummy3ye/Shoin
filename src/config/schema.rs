@@ -256,10 +256,10 @@ pub struct MarkdownConfig {
     pub wiki_links: bool,
     pub highlight: bool,
     pub tables: bool,
-    /// Syntax-highlight the body of a fenced block whose info string names a
-    /// language shoin knows. SPEC.md §5.3.
     pub code_syntax: bool,
     pub plain_text_extensions: Vec<String>,
+    /// Enable inline LaTeX rendering with `$…$` delimiters.
+    pub inline_latex: bool,
 }
 
 impl Default for MarkdownConfig {
@@ -271,6 +271,7 @@ impl Default for MarkdownConfig {
             tables: true,
             code_syntax: true,
             plain_text_extensions: vec![".txt".into()],
+            inline_latex: true,
         }
     }
 }

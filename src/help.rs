@@ -687,7 +687,7 @@ const VIEW: &str = "
 :zen :: hide all chrome
 
 ## Settings, live
-:set <key> [on|off] :: conceal · typewriter · mouse · focus · numbers · code_syntax · hints
+:set <key> [on|off] :: conceal · typewriter · mouse · focus · numbers · code_syntax · inline_latex · hints
 :set measure=72 :: the text width in columns; :set measure reads it
 :set line_spacing=1 :: blank rows between lines, 0 to 4
 

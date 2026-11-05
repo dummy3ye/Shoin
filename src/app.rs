@@ -5432,6 +5432,10 @@ impl App {
             "code_syntax" | "syntax" => {
                 self.config.markdown.code_syntax = resolve(val, self.config.markdown.code_syntax);
             }
+            "inline_latex" | "latex" => {
+                self.config.markdown.inline_latex =
+                    resolve(val, self.config.markdown.inline_latex);
+            }
             // The hint bar. Says which way it went: turned off, the row just
             // goes quiet, which would look like nothing happened.
             "hints" => {

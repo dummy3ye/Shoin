@@ -262,6 +262,29 @@ impl<'a> Body<'a> {
                 }
                 self.para.push(line.trim().to_string());
             }
+
+            BlockKind::MathBlock => {
+                self.flush_para();
+                self.flush_table();
+                self.close_quote();
+                self.close_lists();
+                let trimmed = line.trim();
+                let inner = trimmed.trim_start_matches('$').trim_end_matches('$').trim();
+                if !inner.is_empty() {
+                    match crate::math::render_svg(inner) {
+                        Ok(svg) => {
+                            self.out.push_str("<div class=\"math-block\">");
+                            self.out.push_str(&svg);
+                            self.out.push_str("</div>\n");
+                        }
+                        Err(_) => {
+                            self.out.push_str("<div class=\"math-block\"><code>");
+                            self.out.push_str(&escape(inner));
+                            self.out.push_str("</code></div>\n");
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -483,6 +506,13 @@ fn inline_html(line: &str, md: &MarkdownConfig, base: &std::path::Path) -> Strin
             }
             Inline::WikiLink => out.push_str(&wiki_link(&inner)),
             Inline::Tag => out.push_str(&format!("<span class=\"tag\">{}</span>", escape(&whole))),
+            Inline::Latex => match crate::math::render_svg(&inner) {
+                Ok(svg) => out.push_str(&format!("<span class=\"latex\">{svg}</span>")),
+                Err(error) => out.push_str(&format!(
+                    "<span class=\"latex latex-error\" title=\"{}\">{body}</span>",
+                    escape_attr(&error.to_string())
+                )),
+            },
             // The backslash was markup; what it protected is literal text.
             Inline::Escape => out.push_str(&body),
         }
@@ -835,6 +865,7 @@ table{{border-collapse:collapse;margin:1.5em 0;width:100%;font-size:.95em}}
 th,td{{border:1px solid var(--border);padding:.4em .7em;text-align:left}}
 th{{color:var(--fg);font-weight:700}}
 img{{max-width:100%;height:auto}}
+.latex svg{{max-width:100%;height:auto;vertical-align:middle}}
 main.justify p,main.justify li,main.justify blockquote{{text-align:justify}}
 main.justify pre,main.justify table{{text-align:left}}
 .k{{color:var(--syn-k)}}
@@ -881,6 +912,13 @@ mod tests {
         assert!(got.contains("<code>code</code>"), "{got}");
         assert!(got.contains("<del>gone</del>"), "{got}");
         assert!(got.contains("<mark>marked</mark>"), "{got}");
+    }
+
+    #[test]
+    fn latex_is_exported_as_real_svg_math() {
+        let got = body(r"Gradient: $\frac{\partial^2 f}{\partial x^2}$\n");
+        assert!(got.contains("<svg"), "{got}");
+        assert!(!got.contains("class=\"latex\">\\frac"), "{got}");
     }
 
     #[test]
